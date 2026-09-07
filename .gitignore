@@ -1,0 +1,17 @@
+# ZEPAY runtime data (databases, encrypted secrets, logs, backups)
+zepay_data/
+**/zepay_data/
+
+# Build artifacts
+parts/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Local env
+.env
+.venv/
+venv/
