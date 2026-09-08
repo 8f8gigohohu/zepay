@@ -1,6 +1,10 @@
 # ZEPAY runtime data (databases, encrypted secrets, logs, backups)
 zepay_data/
 **/zepay_data/
+zepay_data_v3/
+**/zepay_data_v3/
+zepay_data_*/
+**/zepay_data_*/
 
 # Build artifacts
 parts/

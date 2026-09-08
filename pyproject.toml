@@ -1,0 +1,52 @@
+# ZEPAY V3 — tooling policy (single source of truth for quality gates).
+#
+# Gates (must all pass before commit):
+#   python -m ruff check .
+#   python -m black --check .
+#   python -m mypy zepay --ignore-missing-imports
+#   python -m pytest tests/v3 -q            (offline suite)
+#   ZEPAY_LIVE_TESTS=1 python -m pytest tests/v3/test_live_network.py -q
+#   python -m zepay.apps.selftest           (22 safety checks)
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["legacy", "zepay_data", "zepay_data_v3"]
+
+[tool.ruff.lint]
+# Deliberate policy:
+# - BLE (blind except) NOT selected: adapters fail closed by catching broad
+#   exceptions at I/O boundaries and reporting DEGRADED/UNAVAILABLE honestly.
+# - D/ANN not selected: this codebase documents via module docstrings + types.
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",   # line length handled by black
+    "E741",   # ambiguous names (l/I) — used in indicator math
+    "W505",   # doc line too long
+    "E702",   # semicolons (occasional one-liner guards)
+    "SIM105", # contextlib.suppress — explicit try/pass+comment is greppable
+              # in fail-closed adapter code
+    "SIM108", # ternary — explicit if/else is clearer in decision code
+    "UP042",  # keep (str, Enum) mixins: StrEnum changes str() output used in
+              # audit-log and UI messages — behavioral parity maintained
+    "RUF012", # mutable class attrs — intentional constant tables
+]
+# ISC not selected: black reflows long strings into single-line implicit
+# concatenations (ISC001) — flagged sites were manually reviewed, all are
+# deliberate line continuations inside rationale lists, no missing commas.
+allowed-confusables = ["–", "−", "×"]  # intentional math/typography symbols
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["RUF059"]  # unpacked fixture fields intentionally unused
+
+[tool.black]
+line-length = 100
+extend-exclude = "legacy|zepay_data"
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+files = ["zepay"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/v3"]

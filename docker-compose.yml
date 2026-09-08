@@ -1,16 +1,48 @@
+# ZEPAY V3 — app + OPTIONAL postgres/redis profiles.
+# Default (no profile): app + SQLite + in-memory cache — fully functional.
+#   docker compose up zepay
+# With PostgreSQL + Redis:
+#   docker compose --profile postgres --profile redis up
 services:
   zepay:
     build: .
-    image: zepay:ultimate
-    container_name: zepay
     ports:
       - "8000:8000"
-    volumes:
-      - zepay_data:/data
     environment:
       ZEPAY_DATA_DIR: /data
-      ZEPAY_PORT: "8000"
+      ZEPAY_DB_BACKEND: ${ZEPAY_DB_BACKEND:-sqlite}
+      ZEPAY_POSTGRES_DSN: ${ZEPAY_POSTGRES_DSN:-}
+      ZEPAY_REDIS_URL: ${ZEPAY_REDIS_URL:-}
+      ZEPAY_AUTOSTART: ${ZEPAY_AUTOSTART:-1}
+    volumes:
+      - zepay-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/ping"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: zepay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: zepay
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
     restart: unless-stopped
 
 volumes:
-  zepay_data:
+  zepay-data:
+  pg-data:
+  redis-data:

@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ZEPAY V3 — Trading Intelligence</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">⚡ ZEPAY <span class="ver">V3</span></div>
+  <div id="status-pills">
+    <span class="pill" id="pill-stage" title="Operational stage — promotion is manual">STAGE …</span>
+    <span class="pill" id="pill-mode" title="Effective execution mode">MODE …</span>
+    <span class="pill" id="pill-health" title="Aggregate system health">HEALTH …</span>
+    <span class="pill" id="pill-ai" title="AI model state">AI …</span>
+    <span class="pill" id="pill-kill" title="Kill switch">KS OFF</span>
+    <span class="pill" id="pill-feed" title="Live event stream">SSE …</span>
+  </div>
+</header>
+
+<nav id="tabs">
+  <button class="tab active" data-tab="dashboard">Dashboard</button>
+  <button class="tab" data-tab="markets">Markets</button>
+  <button class="tab" data-tab="trading">Trading</button>
+  <button class="tab" data-tab="risk">Risk</button>
+  <button class="tab" data-tab="research">Research</button>
+  <button class="tab" data-tab="system">System</button>
+</nav>
+
+<main>
+  <!-- ================= DASHBOARD ================= -->
+  <section id="tab-dashboard" class="tabpane active">
+    <div class="grid" id="dash-cards"></div>
+    <div class="row">
+      <div class="panel grow">
+        <h3>Venues</h3>
+        <div id="dash-venues" class="table-wrap"></div>
+      </div>
+      <div class="panel grow">
+        <h3>Alerts</h3>
+        <div id="dash-alerts" class="table-wrap"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Live event stream <span class="muted">(real bus events — nothing simulated)</span></h3>
+      <div id="dash-events" class="event-feed"></div>
+    </div>
+  </section>
+
+  <!-- ================= MARKETS ================= -->
+  <section id="tab-markets" class="tabpane">
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Cycle signals <span class="muted" id="markets-cycle"></span></h3>
+        <div class="actions">
+          <input id="markets-search" placeholder="Filter market…" />
+          <button class="btn" id="btn-run-cycle">Run cycle now</button>
+        </div>
+      </div>
+      <div class="table-wrap" id="markets-table"></div>
+    </div>
+    <div class="panel" id="market-detail" hidden>
+      <div class="panel-head"><h3 id="md-title">Market</h3>
+        <button class="btn small" id="md-close">Close</button></div>
+      <div class="row">
+        <div class="grow" id="md-chart"></div>
+        <div class="grow" id="md-explain"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Universe <span class="muted" id="universe-count"></span></h3>
+      <div class="actions"><input id="universe-search" placeholder="Search assets (e.g. SOL)…" /></div>
+      <div class="table-wrap" id="universe-table"></div>
+    </div>
+  </section>
+
+  <!-- ================= TRADING ================= -->
+  <section id="tab-trading" class="tabpane">
+    <div class="grid" id="trading-cards"></div>
+    <div class="panel">
+      <div class="panel-head"><h3>Open positions</h3>
+        <div class="actions">
+          <select id="pos-mode"><option>PAPER</option><option>SHADOW</option><option>LIVE</option></select>
+          <button class="btn danger" id="btn-flatten">Emergency flatten…</button>
+        </div></div>
+      <div class="table-wrap" id="positions-table"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Orders</h3>
+        <div class="actions"><button class="btn" id="btn-cancel-all">Cancel all open</button></div></div>
+      <div class="table-wrap" id="orders-table"></div>
+    </div>
+    <div class="row">
+      <div class="panel grow"><h3>Recent trades (§44 real records)</h3>
+        <div class="table-wrap" id="trades-table"></div></div>
+      <div class="panel grow"><h3>Execution quality (§34)</h3>
+        <div class="table-wrap" id="execq-table"></div></div>
+    </div>
+    <div class="panel"><h3>Decisions (§36 immutable record)</h3>
+      <div class="table-wrap" id="decisions-table"></div></div>
+  </section>
+
+  <!-- ================= RISK ================= -->
+  <section id="tab-risk" class="tabpane">
+    <div class="row">
+      <div class="panel grow"><h3>Risk engine state</h3><div id="risk-state"></div></div>
+      <div class="panel grow"><h3>Kill switch (§29)</h3><div id="risk-kill"></div></div>
+    </div>
+    <div class="panel"><h3>Stage gate (§22 — promotion is ALWAYS manual)</h3><div id="risk-gate"></div></div>
+    <div class="row">
+      <div class="panel grow"><h3>Hard limits (cannot be overridden)</h3><div id="risk-hard"></div></div>
+      <div class="panel grow"><h3>Self-test</h3><div id="risk-selftest"></div></div>
+    </div>
+    <div class="panel"><h3>Risk events</h3><div class="table-wrap" id="risk-events"></div></div>
+  </section>
+
+  <!-- ================= RESEARCH ================= -->
+  <section id="tab-research" class="tabpane">
+    <div class="row">
+      <div class="panel grow"><h3>AI ensemble (§26)</h3><div id="res-ai"></div></div>
+      <div class="panel grow"><h3>Drift monitor (§59)</h3><div id="res-drift"></div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Models (§27 champion/challenger — manual promotion)</h3>
+        <div class="actions"><button class="btn" id="btn-train">Train on real data…</button>
+        <button class="btn" id="btn-research">Run research pipeline</button></div></div>
+      <div class="table-wrap" id="models-table"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Backtest (§23 — real candles, costs applied)</h3></div>
+      <div class="actions">
+        <input id="bt-market" placeholder="Market (e.g. BTC/USDT)" value="BTC/USDT">
+        <input id="bt-starting" type="number" value="10000" style="width:110px">
+        <button class="btn" id="btn-backtest">Run backtest</button>
+        <button class="btn" id="btn-wf">Walk-forward</button>
+        <button class="btn" id="btn-hyperopt">Hyperopt (random)</button>
+      </div>
+      <div id="bt-result"></div>
+    </div>
+    <div class="panel"><h3>Experiments</h3><div class="table-wrap" id="experiments-table"></div></div>
+  </section>
+
+  <!-- ================= SYSTEM ================= -->
+  <section id="tab-system" class="tabpane">
+    <div class="row">
+      <div class="panel grow"><h3>Configuration</h3><div id="sys-config"></div></div>
+      <div class="panel grow"><h3>Venues &amp; credentials (§52)</h3><div id="sys-venues"></div></div>
+    </div>
+    <div class="panel"><h3>MCP tools (§50 — trading permissions impossible)</h3><div id="sys-mcp"></div></div>
+    <div class="row">
+      <div class="panel grow"><h3>Backups (§56)</h3><div id="sys-backups"></div></div>
+      <div class="panel grow"><h3>Data quality (§17)</h3><div id="sys-quality"></div></div>
+    </div>
+    <div class="panel"><h3>Audit log (§48)</h3><div class="table-wrap" id="sys-audit"></div></div>
+  </section>
+</main>
+
+<div id="modal-backdrop" hidden><div id="modal">
+  <h3 id="modal-title"></h3>
+  <div id="modal-body"></div>
+  <div class="modal-actions">
+    <button class="btn" id="modal-cancel">Cancel</button>
+    <button class="btn primary" id="modal-ok">Confirm</button>
+  </div>
+</div></div>
+
+<div id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>

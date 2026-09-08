@@ -1,0 +1,18 @@
+# ZEPAY V3 — core runtime dependencies (Python ≥ 3.11)
+fastapi>=0.110
+uvicorn>=0.27
+httpx>=0.27
+websockets>=12.0
+numpy>=1.26
+
+# Optional backends — the system degrades honestly without them:
+#   redis  → faster cache/pub-sub (falls back to in-memory, labeled)
+#   psycopg[binary] → PostgreSQL (falls back to SQLite, labeled)
+redis>=5.0
+psycopg[binary]>=3.1; platform_machine != "armv7l"
+
+# Dev / quality gates
+pytest>=8.0
+ruff>=0.4
+black>=24.0
+mypy>=1.8
