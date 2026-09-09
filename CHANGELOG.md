@@ -1,6 +1,85 @@
 # Changelog
 
-## V3.0.0 — multi-asset, multi-venue, AI-assisted platform rewrite
+## V3.1.0 — real futures trading, multi-venue routing, license gate (v2+v3 merge)
+
+Combines the V2 ultimate build (preserved under `legacy/`) with the V3 modular
+architecture and completes REAL end-to-end futures trading against the REAL
+Binance USDT-M Futures API (fapi.binance.com). The ZEPAY native venue carries
+the full futures contract surface but stays honestly NOT_CONFIGURED until a
+real ZEPAY API specification is provided — nothing is invented.
+
+### Added
+
+* **Per-instrument venue routing (spot ↔ futures, no restart)** — the universe
+  scans both binance_spot and binance_futures (USDT-M perpetuals, public
+  metadata) when the venue is enabled; every market resolves its own venue via
+  `market_venue_overrides` → `default_trading_venue` → primary. Data collection,
+  feature building, paper fills and live execution all follow the instrument's
+  venue. `POST /api/markets/{m}/venue` reroutes a market live; the UI shows a
+  Route column with a spot↔perp toggle.
+* **REAL futures execution path (Binance USDT-M)** — live entries on futures
+  venues run `_futures_prechecks` before any order: leverage validated by the
+  Risk Engine (`max_futures_leverage`, hard ceiling 5x, request auto-capped to
+  the risk-approved value and audited), then capped by the instrument's real
+  leverage brackets (`/fapi/v1/leverageBracket`), HEDGE/dual-side position mode
+  refused (one-way required), margin type set (default ISOLATED, -4046
+  tolerated), `set_leverage` confirmed — only then is the order submitted.
+  Position closes on futures venues are submitted reduce-only.
+* **Futures account integration** — balance sync reads the real futures wallet
+  shape (cross/isolated wallet balances), positions/funding come from the
+  signed API, and connection tests REFUSE withdrawal-enabled keys and keys
+  without trade permission (canTrade=false → BLOCKED).
+* **ZEPAY license gate (§6, ported from v2)** — `zepay/security/license.py`
+  with two honest adapters: offline format+checksum validation (clearly labeled
+  "NOT cloud verification") and a real cloud verifier that reports BLOCKED
+  until an operator-configured endpoint exists. Trading cycles are gated until
+  a key is verified; only the SHA-256 hash is stored (privileged key).
+  Endpoints: GET `/api/license/status`, POST `/verify`, `/clear`, `/endpoint`.
+* **Venue activation gate** — `venues_enabled` is privileged; enabling a venue
+  (e.g. binance_futures) now requires `POST /api/venues/{venue}/enable` with
+  the typed confirmation `ENABLE <VENUE>`, is audited and alerted. The Risk
+  Engine's `venue_allowed` refuses LIVE execution on venues not enabled.
+* **Futures-aware risk limits** — `max_futures_leverage` (default 3.0, hard cap
+  5x) separate from spot `max_leverage` (1.0); both enforced by the Risk
+  Engine, which remains the final authority.
+
+### Changed
+
+* Universe snapshot exposes per-venue instrument counts; DB fallback loads all
+  venues; futures scan is public-metadata-only and gated by venue enablement.
+* `/api/status` venues now include the operator `enabled` flag.
+* Frontend: license panel (verify/deactivate/cloud endpoint), venue
+  enable/disable with typed confirmation, per-market Route column, futures
+  settings in the configuration editor.
+
+### Fixed
+
+* **Trading-blocked clarity (§7)**: when real data is unavailable the UI now
+  shows a prominent global banner — "REAL DATA UNAVAILABLE — NEW TRADES
+  STOPPED (by design)" — with a one-click connectivity check
+  (`GET /api/diagnostics/connectivity`) that probes every venue endpoint for
+  real and explains exactly what is blocked (environment block vs geo-block
+  451 vs not configured), instead of scattered UNREACHABLE badges.
+* **"Get trading" checklist** on the dashboard: key verified → venue enabled →
+  credentials → exchange reachable → real data → paper trading → LIVE stage
+  gate, each step live-checked against real API state, with the run-local
+  quickstart (this preview sandbox blocks all exchange egress; the same build
+  trades normally where exchanges are reachable).
+* Modal dialog bug: `#modal-backdrop` had `display:flex` which overrode the
+  HTML `hidden` attribute, rendering an empty, non-functional Confirm/Cancel
+  dialog over the whole UI at all times. `#modal-backdrop[hidden]{display:none}`
+  restores it; modals also now autofocus their input, close on Escape, and
+  guard against double-resolve. Empty typed confirmations toast an error
+  instead of failing silently.
+
+### Honesty guarantees (unchanged, re-verified)
+
+No fake market data, balances, trades, or verification states. Futures venues
+report honest UNREACHABLE/BLOCKED without network; the ZEPAY venue reports
+NOT_CONFIGURED for every futures method until a real spec exists; withdrawal
+permission is refused by construction.
+
+## V3.0.0 — multi-asset, multi-venue, AI-assisted platform rewrite — multi-asset, multi-venue, AI-assisted platform rewrite
 
 Complete architectural upgrade per the ZEPAY V3 specification (§1–§70).
 The V2 monolith (`zepay_v2.py`, ~9.5k lines, single engine loop, one venue,

@@ -58,7 +58,18 @@ function modal(title, bodyHtml, okLabel = 'Confirm') {
     $('#modal-body').innerHTML = bodyHtml;
     $('#modal-ok').textContent = okLabel;
     $('#modal-backdrop').hidden = false;
-    const close = val => { $('#modal-backdrop').hidden = true; resolve(val); };
+    const inp0 = $('#modal-body input, #modal-body textarea');
+    if (inp0) { inp0.focus(); }
+    let done = false;
+    const close = val => {
+      if (done) return;
+      done = true;
+      $('#modal-backdrop').hidden = true;
+      document.removeEventListener('keydown', onKey);
+      resolve(val);
+    };
+    const onKey = e => { if (e.key === 'Escape') close(null); };
+    document.addEventListener('keydown', onKey);
     $('#modal-cancel').onclick = () => close(null);
     $('#modal-ok').onclick = () => {
       const inp = $('#modal-body input, #modal-body textarea');
@@ -123,9 +134,60 @@ async function refreshStatus() {
     const ms = (h.models || {}).state;
     setPill('pill-ai', `AI ${ms || '?'}`, bcls(ms));
     S.health = h;
+    renderBanner(st, h);
   } catch (e) {
     setPill('pill-health', 'HEALTH API DOWN', 'bad');
   }
+}
+
+// ---- global honesty banner (§7: REAL DATA UNAVAILABLE is always shown loudly) ----
+function renderBanner(st, h) {
+  const el = $('#global-banner');
+  if (!el) return;
+  const eng = st.engine || {}, ex = st.execution || {}, ks = st.kill_switch || {};
+  const q = h.data_quality || {};
+  const feedDown = (q.feed_health || {}).status === 'UNAVAILABLE' ||
+    (h.issues || []).some(i => String(i).includes('market data UNAVAILABLE'));
+  let cls = 'info', title = '', why = '', btn = '';
+  if (ks.kill_switch) {
+    cls = 'danger'; title = '⛔ TRADING HALTED — kill switch engaged';
+    why = 'New orders are stopped platform-wide. Resume requires the typed phrase in the Risk tab. No auto-resume.';
+  } else if (feedDown) {
+    cls = 'danger';
+    title = '⚠ REAL DATA UNAVAILABLE — NEW TRADES STOPPED (by design)';
+    why = 'ZEPAY never trades without real market data. This usually means this machine/network cannot reach the exchange APIs (firewall, geo-block, or a sandboxed preview). Run the connectivity check to see exactly what is blocked.';
+    btn = '<button class="btn small" id="btn-conn-check">Run connectivity check</button>';
+  } else if (String(ex.mode) === 'LIVE') {
+    cls = 'danger'; title = '🔴 LIVE — REAL MONEY AT RISK';
+    why = `Stage ${eng.stage}. Risk engine remains the final authority on every order.`;
+  } else if (String(eng.stage) === 'SHADOW') {
+    cls = 'warn'; title = 'SHADOW — real data, orders shadowed (no real money)';
+    why = 'Signals and risk run on real data; no orders reach exchanges.';
+  } else {
+    cls = 'ok'; title = '🟢 PAPER — real data, simulated fills (no real money)';
+    why = 'Prices, features, AI and risk are real; only fills are simulated.';
+  }
+  el.className = cls;
+  el.hidden = false;
+  el.innerHTML = `<b>${title}</b>${btn}<span class="why">${esc(why)}</span>`;
+  const b = $('#btn-conn-check');
+  if (b) b.onclick = runConnectivityCheck;
+}
+
+async function runConnectivityCheck() {
+  toast('Probing every exchange endpoint — real network calls…', 'info');
+  try {
+    const r = await get('/diagnostics/connectivity');
+    S.conn = r;
+    await modal('Connectivity check — real probes', `
+      <p><b>${esc(r.verdict)}</b></p>
+      ${table(['Venue', 'Endpoint', 'Status', 'Latency', 'Error'],
+        (r.probes || []).map(p => [esc(p.venue), wrap(p.host || '—'),
+          badge(p.status, p.status === 'REACHABLE' ? 'ok' : 'fail'),
+          p.latency_ms != null ? `${p.latency_ms} ms` : '—', wrap(p.error || '—')]))}`,
+      'Close');
+    if (S.tab === 'dashboard') renderDashboard();
+  } catch (e) { toast(e.message, 'err'); }
 }
 function setPill(id, text, cls2) {
   const el = document.getElementById(id);
@@ -161,6 +223,7 @@ function connectSSE() {
 async function renderDashboard() {
   const h = S.health || await get('/health');
   const st = S.status || await get('/status');
+  try { await renderSetup(h, st); } catch (e) { /* checklist must never break the dashboard */ }
   const cards = [];
   const acct = await get('/account?mode=PAPER').catch(() => null);
   cards.push(card('Paper equity', usd(acct && acct.equity), acct ? `available ${usd(acct.available)}` : 'no account'));
@@ -191,6 +254,60 @@ async function renderDashboard() {
     alerts.map(a => [badge(a.level, a.level === 'CRITICAL' ? 'fail' : (a.level === 'WARN' ? 'warn' : 'info')), wrap(a.title), ago(a.created_at)]));
 }
 
+async function renderSetup(h, st) {
+  const lic = await get('/license/status').catch(() => ({}));
+  const venues = st.venues || {};
+  const eng = st.engine || {};
+  const conn = S.conn || null;
+  const anyVenueEnabled = Object.values(venues).some(v => v.enabled);
+  const credsSet = Object.values(venues).some(v => (v.checks || {}).signed_account === true);
+  const dataOk = ((h.data_quality || {}).feed_health || {}).status === 'OK' &&
+    !((h.issues || []).some(i => String(i).includes('market data UNAVAILABLE')));
+  const liveOn = String((st.execution || {}).mode) === 'LIVE' || !!((st.stage_gate || {}).live_enabled);
+  const step = (n, done, t, help) =>
+    `<div class="setup-step ${done ? 'done' : ''}"><div class="num">${done ? '✓' : n}</div>
+     <div class="body"><div class="t">${t} ${done ? badge('DONE', 'ok') : ''}</div><div class="h">${help}</div></div></div>`;
+  let reachTxt = 'unknown — run the check';
+  let reachDone = false;
+  if (conn) {
+    const okVenues = (conn.probes || []).filter(p => p.status === 'REACHABLE').length;
+    reachDone = okVenues > 0;
+    reachTxt = reachDone ? `${okVenues} exchange endpoint(s) reachable` : 'no exchange endpoint reachable from this machine/network';
+  }
+  $('#dash-setup').innerHTML = [
+    step(1, !!lic.verified, 'Verify your ZEPAY key', lic.verified
+      ? `Mode: ${esc(lic.mode)}. ${lic.mode === 'offline' ? 'Offline validation (not cloud verification).' : 'Cloud-verified.'}`
+      : 'System tab → ZEPAY license → paste your key. Trading stays gated until verified.'),
+    step(2, anyVenueEnabled, 'Enable a trading venue', anyVenueEnabled
+      ? 'At least one venue is enabled for routing (System tab → Venues).'
+      : 'System tab → Venues → "Enable venue…" (typed confirmation). Spot works with data only; futures also needs step 3.'),
+    step(3, credsSet, 'Connect exchange API keys (for live/LIVE futures)', credsSet
+      ? 'Credentials stored (encrypted). Withdrawal-enabled keys are refused.'
+      : 'System tab → Venues → "Set credentials…". Trade-only keys, withdrawals never. Paper mode works without keys.'),
+    step(4, reachDone, 'Exchange APIs reachable', `${reachTxt}. <b>ZEPAY never fakes data</b> — if this is blocked (sandbox/geo-block/firewall) no trading can happen here. ` +
+      '<button class="btn small" id="btn-setup-conn">Check now</button>'),
+    step(5, dataOk, 'Real market data flowing', dataOk
+      ? 'Feeds healthy — candles streaming from the exchange.'
+      : 'Feeds are down. This follows from step 4: no exchange connectivity → REAL DATA UNAVAILABLE → new trades stopped.'),
+    step(6, (eng.cycles || 0) > 0 && dataOk, 'Trade in PAPER (real data, simulated fills)', (eng.cycles || 0) > 0
+      ? `Engine running — ${fmt(eng.cycles, 0)} cycles so far. ${dataOk ? 'Watch Trading tab for positions/decisions.' : 'Waiting for real data (step 5).'}`
+      : 'Markets tab → "Run cycle now". Paper uses real prices; only the fills are simulated.'),
+    step(7, liveOn, 'Go LIVE (optional — real money)', liveOn
+      ? 'LIVE is active. Risk engine still enforces every limit.'
+      : 'Risk tab → Stage gate: PAPER → SHADOW → LIMITED LIVE → FULL LIVE. Each promotion is manual, typed, and never automatic.'),
+  ].join('') + `
+  <div class="setup-quick"><b>Cannot get data in this preview?</b> This sandboxed preview blocks ALL outbound exchange connections
+    (the connectivity check proves it). To actually trade, run ZEPAY where Binance APIs are reachable — your own machine or a VPS:
+    <div style="margin-top:6px">
+      <code>git clone https://github.com/8f8gigohohu/zepay.git</code> → <code>cd zepay</code> →
+      <code>pip install -r requirements.txt</code> → <code>python -m zepay.apps.server</code> → open
+      <code>http://localhost:8000</code>
+    </div>
+    Same UI, same engine — with real data flowing, paper trading starts immediately; live needs your keys + the stage gate.</div>`;
+  const b = $('#btn-setup-conn');
+  if (b) b.onclick = runConnectivityCheck;
+}
+
 // ---------------------------------------------------------------- MARKETS
 async function renderMarkets() {
   const d = await get('/markets');
@@ -211,13 +328,32 @@ async function renderMarkets() {
         wrap((m.reasons || [m.why]).filter(Boolean).join(' · ').slice(0, 140))];
     }));
   $$('.mkt-link').forEach(a => a.onclick = e => { e.preventDefault(); openMarket(a.textContent); });
-  const u = await get('/universe?limit=60');
-  $('#universe-count').textContent = `· source: ${u.source.source} · ${u.source.instruments} instruments discovered`;
+  const u = await get('/universe?limit=200');
+  $('#universe-count').textContent = `· source: ${u.source.source} · ${u.source.instruments} instruments discovered · venues: ${Object.keys(u.source.venues || {}).join(', ') || '—'}`;
   const us = ($('#universe-search').value || '').toUpperCase();
   const assets = (u.assets || []).filter(a => !us || String(a.symbol).includes(us)).slice(0, 40);
-  $('#universe-table').innerHTML = table(['Symbol', 'Venue', 'Status', '24h vol (USD)', 'Base/Quote'],
-    assets.map(a => [a.symbol, a.venue, badge(a.status || 'TRADING', 'ok'), fmt(a.volume24h_usd, 0),
-      `${a.base_asset || ''}/${a.quote_asset || ''}`]));
+  const [spotSet, futSet] = await Promise.all([
+    get('/universe?venue=binance_spot&limit=300').then(r => new Set((r.assets || []).map(a => a.symbol))).catch(() => new Set()),
+    get('/universe?venue=binance_futures&limit=300').then(r => new Set((r.assets || []).map(a => a.symbol))).catch(() => new Set()),
+  ]);
+  $('#universe-table').innerHTML = table(['Symbol', 'Venue', 'Trading', 'Status', '24h vol (USD)', 'Route'],
+    assets.map(a => {
+      const isFut = a.venue === 'binance_futures';
+      const other = isFut ? 'binance_spot' : 'binance_futures';
+      const canSwitch = isFut ? spotSet.has(a.symbol) : futSet.has(a.symbol);
+      return [a.symbol,
+        badge(a.venue, isFut ? 'warn' : 'ok'),
+        isFut ? badge(`PERP ${a.max_leverage ? '≤' + a.max_leverage + 'x' : ''}`, 'warn') : 'SPOT',
+        badge(a.status || 'TRADING', 'ok'), fmt(a.volume24h_usd, 0),
+        canSwitch ? html(`<button class="btn small route-m" data-m="${esc(a.symbol)}" data-v="${other}">→ ${other === 'binance_futures' ? 'FUTURES' : 'SPOT'}</button>`) : '<span class="muted">—</span>'];
+    }));
+  $$('.route-m').forEach(b => b.onclick = async () => {
+    try {
+      const r = await post(`/markets/${encodeURIComponent(b.dataset.m)}/venue`, { venue: b.dataset.v });
+      toast(`${b.dataset.m} now trades on ${r.venue} (${r.trading_mode})`, 'ok');
+      renderMarkets();
+    } catch (e) { toast(e.message, 'err'); }
+  });
 }
 async function openMarket(market) {
   $('#market-detail').hidden = false;
@@ -536,7 +672,8 @@ async function renderSystem() {
   const editable = ['universe', 'risk_mode', 'max_positions', 'max_position_pct', 'max_total_exposure_pct',
     'risk_per_trade_pct', 'min_edge_pct', 'cycle_interval', 'candle_interval', 'candle_limit',
     'strict_ai_mode', 'ensemble_mode', 'derivs_enabled', 'ws_streaming', 'paper_starting_balance',
-    'paper_participation_max', 'fee_bps', 'slippage_bps', 'backup_keep', 'api_token'];
+    'paper_participation_max', 'fee_bps', 'slippage_bps', 'backup_keep', 'api_token',
+    'default_trading_venue', 'futures_leverage', 'futures_margin_mode', 'max_futures_leverage', 'futures_universe_scan'];
   $('#sys-config').innerHTML = `<div class="kv">${editable.filter(k => k in cfg).map(k => {
     const v = cfg[k];
     return `<div class="k">${esc(k)}</div><div class="v">${Array.isArray(v)
@@ -569,6 +706,8 @@ async function renderSystem() {
       <div class="actions" style="margin-top:6px">
         <button class="btn small test-v" data-v="${vid}">Test connection</button>
         ${vid.includes('binance') || vid === 'zepay' ? `<button class="btn small creds-v" data-v="${vid}">Set credentials…</button>` : ''}
+        ${v.enabled === false ? `<button class="btn small enable-v" data-v="${vid}">Enable venue…</button>`
+          : `<button class="btn small disable-v" data-v="${vid}">Disable venue</button>`}
       </div>
     </div>`).join('');
   $$('.test-v').forEach(b => b.onclick = async () => {
@@ -580,6 +719,60 @@ async function renderSystem() {
       <input data-k="api_key" placeholder="API key"><input data-k="api_secret" type="password" placeholder="API secret" style="margin-top:8px">`, 'SAVE');
     if (!r || !r.inputs.api_key) return;
     try { const res = await post('/venues/credentials', { venue: b.dataset.v, api_key: r.inputs.api_key, api_secret: r.inputs.api_secret }); toast(res.ok ? 'Credentials saved (encrypted)' : 'Failed', res.ok ? 'ok' : 'err'); refreshStatus(); renderSystem(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+
+  const lic = await get('/license/status');
+  const licPanel = $('#sys-license');
+  if (licPanel) {
+    licPanel.innerHTML = `
+      <div class="kv">
+        <div class="k">Status</div><div class="v">${lic.verified ? badge('VERIFIED', 'ok') : badge('NOT VERIFIED — trading gated', 'fail')}</div>
+        <div class="k">Mode</div><div class="v">${esc(lic.mode || '—')}${lic.mode === 'offline' ? ' <span class="muted">(local format check — NOT cloud verification)</span>' : ''}</div>
+        <div class="k">Cloud adapter</div><div class="v">${esc(lic.cloud_adapter)}</div>
+        <div class="k">Cloud endpoint</div><div class="v">${esc(lic.cloud_endpoint || 'not configured')}</div>
+      </div>
+      <div class="actions" style="margin-top:8px">
+        <input id="lic-key" placeholder="ZEPAY-XXXX-XXXX-…" style="flex:1">
+        <button class="btn primary" id="btn-lic-verify">Verify &amp; activate</button>
+        ${lic.verified ? '<button class="btn" id="btn-lic-clear">Deactivate</button>' : ''}
+        <button class="btn" id="btn-lic-endpoint">Cloud endpoint…</button>
+      </div>
+      <p class="muted">The key itself is never stored — only its SHA-256 hash. Cloud verification activates automatically once a ZEPAY endpoint is configured; until then verification is local-only and clearly labeled.</p>`;
+    $('#btn-lic-verify').onclick = async () => {
+      const key = $('#lic-key').value.trim();
+      if (!key) return toast('Enter your ZEPAY key first', 'err');
+      try { const r = await post('/license/verify', { key, mode: null }); toast(r.ok ? `Key accepted (${r.mode})` : `Refused: ${r.message}`, r.ok ? 'ok' : 'err'); renderSystem(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+    const clr = $('#btn-lic-clear');
+    if (clr) clr.onclick = async () => {
+      if (!await confirmDanger('Deactivate license', 'Trading will be gated until a key is verified again. Continue?')) return;
+      try { await post('/license/clear', {}); toast('License deactivated — trading gated', 'warn'); renderSystem(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+    $('#btn-lic-endpoint').onclick = async () => {
+      const r = await modal('ZEPAY cloud endpoint', `<p>Only set this when ZEPAY publishes its verification API. Empty = offline mode.</p>
+        <input data-k="endpoint" placeholder="https://…" value="${esc(lic.cloud_endpoint || '')}">`, 'SAVE');
+      if (!r) return;
+      try { await post('/license/endpoint', { endpoint: r.inputs.endpoint.trim() }); toast('Endpoint saved', 'ok'); renderSystem(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  }
+
+  $$('.enable-v').forEach(b => b.onclick = async () => {
+    const vid = b.dataset.v;
+    const r = await modal(`Enable venue ${vid}`, `<p>Typed confirmation required. Enabling makes <b>${vid}</b> eligible for market routing (futures scanning, per-market routing). Live orders still require the stage gate, credentials and the Risk Engine.</p>
+      <input data-k="confirm" placeholder="TYPE: ENABLE ${vid.toUpperCase()}">`, 'ENABLE');
+    if (!r) return;  // cancelled
+    if (!r.inputs.confirm || !r.inputs.confirm.trim()) { toast(`Type "ENABLE ${vid.toUpperCase()}" to confirm`, 'err'); return; }
+    try { const res = await post(`/venues/${vid}/enable`, { confirm: r.inputs.confirm.trim() }); toast(res.ok ? `${vid} enabled for routing` : `Refused`, res.ok ? 'ok' : 'err'); renderSystem(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  $$('.disable-v').forEach(b => b.onclick = async () => {
+    const vid = b.dataset.v;
+    if (!await confirmDanger(`Disable ${vid}`, `Disable venue ${vid} for routing? Live execution on it will be refused.`)) return;
+    try { const res = await post(`/venues/${vid}/disable`, {}); toast(`${vid} disabled`, 'warn'); renderSystem(); }
     catch (e) { toast(e.message, 'err'); }
   });
 

@@ -29,9 +29,12 @@
   <button class="tab" data-tab="system">System</button>
 </nav>
 
+<div id="global-banner" hidden></div>
+
 <main>
   <!-- ================= DASHBOARD ================= -->
   <section id="tab-dashboard" class="tabpane active">
+    <div class="panel"><h3>Get trading — live setup checklist</h3><div id="dash-setup"></div></div>
     <div class="grid" id="dash-cards"></div>
     <div class="row">
       <div class="panel grow">
@@ -148,6 +151,7 @@
       <div class="panel grow"><h3>Configuration</h3><div id="sys-config"></div></div>
       <div class="panel grow"><h3>Venues &amp; credentials (§52)</h3><div id="sys-venues"></div></div>
     </div>
+    <div class="panel"><h3>ZEPAY license (§6 — honest verification)</h3><div id="sys-license"></div></div>
     <div class="panel"><h3>MCP tools (§50 — trading permissions impossible)</h3><div id="sys-mcp"></div></div>
     <div class="row">
       <div class="panel grow"><h3>Backups (§56)</h3><div id="sys-backups"></div></div>

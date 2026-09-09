@@ -297,6 +297,30 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             "/fapi/v1/leverage", {"symbol": symbol, "leverage": int(leverage)}, method="POST"
         )
 
+    def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED"):
+        """ISOLATED | CROSSED. -4046 (no change needed) is surfaced, not hidden."""
+        return self._signed(
+            "/fapi/v1/marginType",
+            {"symbol": symbol, "marginType": str(margin_type).upper()},
+            method="POST",
+        )
+
+    def position_mode(self) -> dict:
+        """Real dual-side (hedge) mode flag. ZEPAY requires ONE-WAY."""
+        return self._signed("/fapi/v1/positionSide/dual", {})
+
+    def max_leverage(self, symbol: str) -> int | None:
+        """Max leverage from the venue's REAL leverage brackets (signed call)."""
+        try:
+            brackets = self._signed("/fapi/v1/leverageBracket", {"symbol": symbol})
+            first = (brackets or [{}])[0]
+            bricks = first.get("brackets") or first.get("Brackets") or []
+            if bricks:
+                return int(safe_float(bricks[0].get("initialLeverage")) or 0) or None
+        except Exception as e:
+            log.debug("leverageBracket unavailable for %s: %s", symbol, e)
+        return None
+
     def test_connection(self) -> dict:
         out: dict = {"connected": False, "venue": self.id, "checks": {}}
         try:
@@ -324,6 +348,19 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         try:
             acct = self.account(timeout=10)
             out["checks"]["signed_account"] = True
+            if acct.get("canWithdraw"):
+                out["connected"] = False
+                out["status"] = "BLOCKED"
+                out["error"] = (
+                    "SECURITY REFUSAL: this futures API key has WITHDRAWAL permission. "
+                    "ZEPAY refuses withdrawal-enabled keys. Use a trade-only key."
+                )
+                return out
+            if acct.get("canTrade") is False:
+                out["connected"] = False
+                out["status"] = "BLOCKED"
+                out["error"] = "API key lacks futures trading permission (canTrade=false)."
+                return out
             out["connected"] = True
             out["total_wallet_balance"] = safe_float(acct.get("totalWalletBalance"))
         except Exception as e:

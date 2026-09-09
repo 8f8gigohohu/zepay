@@ -26,6 +26,7 @@ PAPER → SHADOW → LIMITED LIVE → FULL LIVE      (promotion is ALWAYS manual
 ```bash
 # 1. install (venv + deps + safety selftest)
 bash scripts/install.sh
+#    (or: pip install -r requirements.txt)
 
 # 2. run the server (API + frontend + engine)
 source .venv/bin/activate
@@ -35,6 +36,28 @@ python -m zepay.apps.server          # → http://localhost:8000
 docker compose up zepay              # SQLite default
 docker compose --profile postgres --profile redis up   # full stack
 ```
+
+### Trading, step by step (the UI's "Get trading" checklist automates this)
+
+1. **Open** http://localhost:8000 — the banner tells you the honest state
+   (e.g. `REAL DATA UNAVAILABLE` if this network can't reach exchanges —
+   ZEPAY never fakes data; use the one-click connectivity check to see
+   exactly what is blocked).
+2. **Verify your ZEPAY key** — System tab → ZEPAY license (offline checksum
+   validation by default; cloud verification activates when a ZEPAY
+   endpoint is configured). Trading stays gated until verified.
+3. **Enable venues** — System tab → Venues → "Enable venue…"
+   (typed confirmation). `binance_spot` for spot, `binance_futures` for
+   USDT-M perpetuals.
+4. **(LIVE only) connect API keys** — System tab → "Set credentials…".
+   Trade-only keys; withdrawal-enabled keys are REFUSED. Paper trading
+   needs no keys.
+5. **Trade paper** — Markets tab → "Run cycle now". Real prices, features,
+   AI and risk; simulated fills. Route any market spot ↔ futures with the
+   Route button.
+6. **Go LIVE (optional, real money)** — Risk tab → Stage gate:
+   PAPER → SHADOW → LIMITED LIVE → FULL LIVE. Every promotion is manual,
+   typed, and never automatic.
 
 CLI (same engine, no browser):
 
@@ -119,10 +142,17 @@ fills within 20 bps of real book prices · kill switch halts a real cycle.
 
 ## Known environment limitations (reported, not hidden)
 
-* `api.binance.com` / `fapi.binance.com` return HTTP 451 here → public data via
-  `data-api.binance.vision` / `data-stream.binance.vision`; **signed** endpoints
-  are unreachable from this sandbox, so LIVE order paths are exercised by
-  unit-level state-machine/reconciliation tests only.
+* In the current sandbox ALL exchange endpoints are blocked at the network
+  level (TLS connections dropped — see `/api/diagnostics/connectivity`), so
+  the app reports `REAL DATA UNAVAILABLE`, stops new trades, and the UI
+  shows a red banner explaining why. This is by design: ZEPAY never fakes
+  data. Run it where exchange APIs are reachable (your machine / a VPS)
+  and the same build trades normally.
+* Geo-blocked networks (HTTP 451) are detected and shown as `GEO_BLOCKED`;
+  trading cannot run from such networks and is never simulated instead.
+* Bybit returns 403 here → no Bybit adapter claims.
+* Redis/Postgres binaries absent in this sandbox → SQLite + in-memory cache are
+  used and labeled; Docker profiles provide the real services.
 * Bybit returns 403 here → no Bybit adapter claims.
 * Redis/Postgres binaries absent in this sandbox → SQLite + in-memory cache are
   used and labeled; Docker profiles provide the real services.

@@ -75,9 +75,17 @@ class MarketDataCollector:
             )
             self.errors[market] = er
 
-    # ---- fetchers (primary venue = binance_spot unless overridden) ----
+    # ---- fetchers (venue resolved PER INSTRUMENT; global config is fallback) ----
     def _venue_for(self, market: str) -> tuple[str, Any]:
-        vid = self.config.get("market_data_venue") or self.universe.primary
+        vid = None
+        try:
+            inst = self.universe.get(market)
+            if inst is not None:
+                vid = inst.venue
+        except Exception:
+            vid = None
+        if not vid:
+            vid = self.config.get("market_data_venue") or self.universe.primary
         adapter = self.registry.get(vid)
         return vid, adapter
 

@@ -214,6 +214,82 @@ class ZepayVenueAdapter(ExchangeAdapter):
             venue=self.id,
         )
 
+    # ------------------------------------------------------------------
+    # FUTURES CONTRACT SURFACE (TODO(spec)) — §9/§25.
+    # The real ZEPAY API specification for futures is NOT bundled with this
+    # build. These endpoints stay NOT_CONFIGURED (honest) until an operator
+    # configures a real ZEPAY venue endpoint; paths below are the documented
+    # PROPOSED contract and must be aligned 1:1 with the real spec when it
+    # exists. Nothing here is ever simulated as real.
+    # ------------------------------------------------------------------
+    def positions(self, symbol: str | None = None) -> list[dict]:
+        """Futures positions from the real ZEPAY venue."""
+        self._require_configured()
+        qs = f"?symbol={symbol}" if symbol else ""
+        return http_json(
+            f"{self.base_url()}/futures/positions{qs}",
+            timeout=12,
+            headers=self._headers(),
+            venue=self.id,
+        )
+
+    def set_leverage(self, symbol: str, leverage: int):
+        self._require_configured()
+        return http_json(
+            f"{self.base_url()}/futures/leverage",
+            timeout=12,
+            method="POST",
+            data={"symbol": symbol, "leverage": int(leverage)},
+            headers=self._headers(),
+            venue=self.id,
+        )
+
+    def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED"):
+        self._require_configured()
+        return http_json(
+            f"{self.base_url()}/futures/margin-type",
+            timeout=12,
+            method="POST",
+            data={"symbol": symbol, "marginType": str(margin_type).upper()},
+            headers=self._headers(),
+            venue=self.id,
+        )
+
+    def position_mode(self) -> dict:
+        """Hedge-mode flag from the real ZEPAY venue (ZEPAY requires ONE-WAY)."""
+        self._require_configured()
+        return http_json(
+            f"{self.base_url()}/futures/position-mode",
+            timeout=10,
+            headers=self._headers(),
+            venue=self.id,
+        )
+
+    def funding_info(self, symbol: str) -> dict:
+        """Real funding/mark/index data from the ZEPAY venue."""
+        self._require_configured()
+        return http_json(
+            f"{self.base_url()}/futures/funding?symbol={symbol}",
+            timeout=10,
+            headers=self._headers(),
+            venue=self.id,
+        )
+
+    def max_leverage(self, symbol: str) -> int | None:
+        """Real max leverage for a symbol from the ZEPAY venue."""
+        self._require_configured()
+        out = http_json(
+            f"{self.base_url()}/futures/leverage-bracket?symbol={symbol}",
+            timeout=10,
+            headers=self._headers(),
+            venue=self.id,
+        )
+        try:
+            bricks = (out or [{}])[0].get("brackets") or []
+            return int(bricks[0].get("initialLeverage")) if bricks else None
+        except Exception:
+            return None
+
     def test_connection(self) -> dict:
         out: dict[str, Any] = {"connected": False, "venue": self.id, "checks": {}}
         if not self.configured():
