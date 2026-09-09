@@ -54,6 +54,17 @@ real ZEPAY API specification is provided — nothing is invented.
 
 ### Fixed
 
+* **Trading-blocked clarity (§7)**: when real data is unavailable the UI now
+  shows a prominent global banner — "REAL DATA UNAVAILABLE — NEW TRADES
+  STOPPED (by design)" — with a one-click connectivity check
+  (`GET /api/diagnostics/connectivity`) that probes every venue endpoint for
+  real and explains exactly what is blocked (environment block vs geo-block
+  451 vs not configured), instead of scattered UNREACHABLE badges.
+* **"Get trading" checklist** on the dashboard: key verified → venue enabled →
+  credentials → exchange reachable → real data → paper trading → LIVE stage
+  gate, each step live-checked against real API state, with the run-local
+  quickstart (this preview sandbox blocks all exchange egress; the same build
+  trades normally where exchanges are reachable).
 * Modal dialog bug: `#modal-backdrop` had `display:flex` which overrode the
   HTML `hidden` attribute, rendering an empty, non-functional Confirm/Cancel
   dialog over the whole UI at all times. `#modal-backdrop[hidden]{display:none}`

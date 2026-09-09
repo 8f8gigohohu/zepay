@@ -134,9 +134,60 @@ async function refreshStatus() {
     const ms = (h.models || {}).state;
     setPill('pill-ai', `AI ${ms || '?'}`, bcls(ms));
     S.health = h;
+    renderBanner(st, h);
   } catch (e) {
     setPill('pill-health', 'HEALTH API DOWN', 'bad');
   }
+}
+
+// ---- global honesty banner (§7: REAL DATA UNAVAILABLE is always shown loudly) ----
+function renderBanner(st, h) {
+  const el = $('#global-banner');
+  if (!el) return;
+  const eng = st.engine || {}, ex = st.execution || {}, ks = st.kill_switch || {};
+  const q = h.data_quality || {};
+  const feedDown = (q.feed_health || {}).status === 'UNAVAILABLE' ||
+    (h.issues || []).some(i => String(i).includes('market data UNAVAILABLE'));
+  let cls = 'info', title = '', why = '', btn = '';
+  if (ks.kill_switch) {
+    cls = 'danger'; title = '⛔ TRADING HALTED — kill switch engaged';
+    why = 'New orders are stopped platform-wide. Resume requires the typed phrase in the Risk tab. No auto-resume.';
+  } else if (feedDown) {
+    cls = 'danger';
+    title = '⚠ REAL DATA UNAVAILABLE — NEW TRADES STOPPED (by design)';
+    why = 'ZEPAY never trades without real market data. This usually means this machine/network cannot reach the exchange APIs (firewall, geo-block, or a sandboxed preview). Run the connectivity check to see exactly what is blocked.';
+    btn = '<button class="btn small" id="btn-conn-check">Run connectivity check</button>';
+  } else if (String(ex.mode) === 'LIVE') {
+    cls = 'danger'; title = '🔴 LIVE — REAL MONEY AT RISK';
+    why = `Stage ${eng.stage}. Risk engine remains the final authority on every order.`;
+  } else if (String(eng.stage) === 'SHADOW') {
+    cls = 'warn'; title = 'SHADOW — real data, orders shadowed (no real money)';
+    why = 'Signals and risk run on real data; no orders reach exchanges.';
+  } else {
+    cls = 'ok'; title = '🟢 PAPER — real data, simulated fills (no real money)';
+    why = 'Prices, features, AI and risk are real; only fills are simulated.';
+  }
+  el.className = cls;
+  el.hidden = false;
+  el.innerHTML = `<b>${title}</b>${btn}<span class="why">${esc(why)}</span>`;
+  const b = $('#btn-conn-check');
+  if (b) b.onclick = runConnectivityCheck;
+}
+
+async function runConnectivityCheck() {
+  toast('Probing every exchange endpoint — real network calls…', 'info');
+  try {
+    const r = await get('/diagnostics/connectivity');
+    S.conn = r;
+    await modal('Connectivity check — real probes', `
+      <p><b>${esc(r.verdict)}</b></p>
+      ${table(['Venue', 'Endpoint', 'Status', 'Latency', 'Error'],
+        (r.probes || []).map(p => [esc(p.venue), wrap(p.host || '—'),
+          badge(p.status, p.status === 'REACHABLE' ? 'ok' : 'fail'),
+          p.latency_ms != null ? `${p.latency_ms} ms` : '—', wrap(p.error || '—')]))}`,
+      'Close');
+    if (S.tab === 'dashboard') renderDashboard();
+  } catch (e) { toast(e.message, 'err'); }
 }
 function setPill(id, text, cls2) {
   const el = document.getElementById(id);
@@ -172,6 +223,7 @@ function connectSSE() {
 async function renderDashboard() {
   const h = S.health || await get('/health');
   const st = S.status || await get('/status');
+  try { await renderSetup(h, st); } catch (e) { /* checklist must never break the dashboard */ }
   const cards = [];
   const acct = await get('/account?mode=PAPER').catch(() => null);
   cards.push(card('Paper equity', usd(acct && acct.equity), acct ? `available ${usd(acct.available)}` : 'no account'));
@@ -200,6 +252,60 @@ async function renderDashboard() {
   const alerts = await get('/alerts?limit=15').catch(() => []);
   $('#dash-alerts').innerHTML = table(['Level', 'Title', 'When'],
     alerts.map(a => [badge(a.level, a.level === 'CRITICAL' ? 'fail' : (a.level === 'WARN' ? 'warn' : 'info')), wrap(a.title), ago(a.created_at)]));
+}
+
+async function renderSetup(h, st) {
+  const lic = await get('/license/status').catch(() => ({}));
+  const venues = st.venues || {};
+  const eng = st.engine || {};
+  const conn = S.conn || null;
+  const anyVenueEnabled = Object.values(venues).some(v => v.enabled);
+  const credsSet = Object.values(venues).some(v => (v.checks || {}).signed_account === true);
+  const dataOk = ((h.data_quality || {}).feed_health || {}).status === 'OK' &&
+    !((h.issues || []).some(i => String(i).includes('market data UNAVAILABLE')));
+  const liveOn = String((st.execution || {}).mode) === 'LIVE' || !!((st.stage_gate || {}).live_enabled);
+  const step = (n, done, t, help) =>
+    `<div class="setup-step ${done ? 'done' : ''}"><div class="num">${done ? '✓' : n}</div>
+     <div class="body"><div class="t">${t} ${done ? badge('DONE', 'ok') : ''}</div><div class="h">${help}</div></div></div>`;
+  let reachTxt = 'unknown — run the check';
+  let reachDone = false;
+  if (conn) {
+    const okVenues = (conn.probes || []).filter(p => p.status === 'REACHABLE').length;
+    reachDone = okVenues > 0;
+    reachTxt = reachDone ? `${okVenues} exchange endpoint(s) reachable` : 'no exchange endpoint reachable from this machine/network';
+  }
+  $('#dash-setup').innerHTML = [
+    step(1, !!lic.verified, 'Verify your ZEPAY key', lic.verified
+      ? `Mode: ${esc(lic.mode)}. ${lic.mode === 'offline' ? 'Offline validation (not cloud verification).' : 'Cloud-verified.'}`
+      : 'System tab → ZEPAY license → paste your key. Trading stays gated until verified.'),
+    step(2, anyVenueEnabled, 'Enable a trading venue', anyVenueEnabled
+      ? 'At least one venue is enabled for routing (System tab → Venues).'
+      : 'System tab → Venues → "Enable venue…" (typed confirmation). Spot works with data only; futures also needs step 3.'),
+    step(3, credsSet, 'Connect exchange API keys (for live/LIVE futures)', credsSet
+      ? 'Credentials stored (encrypted). Withdrawal-enabled keys are refused.'
+      : 'System tab → Venues → "Set credentials…". Trade-only keys, withdrawals never. Paper mode works without keys.'),
+    step(4, reachDone, 'Exchange APIs reachable', `${reachTxt}. <b>ZEPAY never fakes data</b> — if this is blocked (sandbox/geo-block/firewall) no trading can happen here. ` +
+      '<button class="btn small" id="btn-setup-conn">Check now</button>'),
+    step(5, dataOk, 'Real market data flowing', dataOk
+      ? 'Feeds healthy — candles streaming from the exchange.'
+      : 'Feeds are down. This follows from step 4: no exchange connectivity → REAL DATA UNAVAILABLE → new trades stopped.'),
+    step(6, (eng.cycles || 0) > 0 && dataOk, 'Trade in PAPER (real data, simulated fills)', (eng.cycles || 0) > 0
+      ? `Engine running — ${fmt(eng.cycles, 0)} cycles so far. ${dataOk ? 'Watch Trading tab for positions/decisions.' : 'Waiting for real data (step 5).'}`
+      : 'Markets tab → "Run cycle now". Paper uses real prices; only the fills are simulated.'),
+    step(7, liveOn, 'Go LIVE (optional — real money)', liveOn
+      ? 'LIVE is active. Risk engine still enforces every limit.'
+      : 'Risk tab → Stage gate: PAPER → SHADOW → LIMITED LIVE → FULL LIVE. Each promotion is manual, typed, and never automatic.'),
+  ].join('') + `
+  <div class="setup-quick"><b>Cannot get data in this preview?</b> This sandboxed preview blocks ALL outbound exchange connections
+    (the connectivity check proves it). To actually trade, run ZEPAY where Binance APIs are reachable — your own machine or a VPS:
+    <div style="margin-top:6px">
+      <code>git clone https://github.com/8f8gigohohu/zepay.git</code> → <code>cd zepay</code> →
+      <code>pip install -r requirements.txt</code> → <code>python -m zepay.apps.server</code> → open
+      <code>http://localhost:8000</code>
+    </div>
+    Same UI, same engine — with real data flowing, paper trading starts immediately; live needs your keys + the stage gate.</div>`;
+  const b = $('#btn-setup-conn');
+  if (b) b.onclick = runConnectivityCheck;
 }
 
 // ---------------------------------------------------------------- MARKETS

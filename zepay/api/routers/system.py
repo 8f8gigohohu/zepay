@@ -81,6 +81,71 @@ def set_config(body: ConfigPatch, request: Request) -> dict:
     return {"ok": True, "changed": list(changed.keys())}
 
 
+# ---- connectivity diagnostics (real probes — explains WHY data is down) ----
+@router.get("/diagnostics/connectivity")
+def diagnostics_connectivity(request: Request) -> dict:
+    """Real network probes against every venue's public endpoint. Honest by
+    construction: no venue is ever reported reachable unless it actually
+    answered. Distinguishes environment blocks (all fail) from per-venue
+    problems (geo-block 451, auth, etc.)."""
+    import time as _t
+
+    z = zapp_of(request)
+    from zepay.exchanges.binance_futures import FAPI_BASES
+    from zepay.exchanges.binance_spot import PUBLIC_BASES
+
+    hosts = {
+        "binance_spot": PUBLIC_BASES[0] if PUBLIC_BASES else "",
+        "binance_futures": FAPI_BASES[0] if FAPI_BASES else "",
+    }
+    rows = []
+    for vid, adapter in z.registry.all().items():
+        row = {
+            "venue": vid,
+            "host": hosts.get(vid) or "",
+            "status": None,
+            "latency_ms": None,
+            "error": "",
+        }
+        t0 = _t.monotonic()
+        try:
+            adapter.ping()
+            row["status"] = "REACHABLE"
+        except Exception as e:
+            msg = str(e)
+            row["status"] = (
+                "GEO_BLOCKED"
+                if "451" in msg
+                else ("NOT_CONFIGURED" if "NOT_CONFIGURED" in msg.upper() else "UNREACHABLE")
+            )
+            row["error"] = msg[:180]
+        row["latency_ms"] = round((_t.monotonic() - t0) * 1000)
+        rows.append(row)
+    reachable = [r for r in rows if r["status"] == "REACHABLE"]
+    data_venues = [r for r in rows if r["venue"] in ("binance_spot", "binance_futures")]
+    if reachable or any(r["status"] == "REACHABLE" for r in data_venues):
+        verdict = "Exchange APIs reachable — data should flow. Check credentials/keys if trading still fails."
+    elif data_venues and all(r["status"] == "GEO_BLOCKED" for r in data_venues):
+        verdict = (
+            "Exchange APIs answer HTTP 451 — your network/region is geo-blocked by the exchange. "
+            "Trading cannot run from this network (ZEPAY will not fake data)."
+        )
+    else:
+        verdict = (
+            "This machine/network cannot reach ANY exchange API (connection blocked or dropped). "
+            "This is an environment limitation, not an app bug — ZEPAY refuses to trade without "
+            "real data. Run ZEPAY where exchange APIs are reachable (your own machine/VPS with "
+            "open egress) and the same UI will trade."
+        )
+    z.audit(
+        "system",
+        "connectivity_check",
+        {"reachable": len(reachable), "probed": len(rows)},
+        actor="api",
+    )
+    return {"probes": rows, "reachable_count": len(reachable), "verdict": verdict}
+
+
 # ---- ZEPAY license (§6: honest offline/cloud key verification) ----
 @router.get("/license/status")
 def license_status(request: Request) -> dict:

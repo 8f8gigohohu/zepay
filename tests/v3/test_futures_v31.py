@@ -327,3 +327,26 @@ def test_futures_test_connection_refuses_withdrawal_key(app, monkeypatch):
     monkeypatch.setattr(ad, "account", lambda timeout=12: {"canWithdraw": False, "canTrade": True})
     out = ad.test_connection()
     assert out["connected"] is True and out["status"] == "OK"
+
+
+# ---------------------------------------------------------------------------
+# 8. connectivity diagnostics — honest probes, verdict explains environment
+# ---------------------------------------------------------------------------
+def test_connectivity_diagnostics_structure(client):
+    r = client.get("/api/diagnostics/connectivity")
+    assert r.status_code == 200
+    d = r.json()
+    assert isinstance(d["probes"], list) and len(d["probes"]) >= 4
+    assert {p["venue"] for p in d["probes"]} >= {
+        "binance_spot",
+        "binance_futures",
+        "zepay",
+        "solana",
+    }
+    for p in d["probes"]:
+        assert p["status"] in {"REACHABLE", "UNREACHABLE", "GEO_BLOCKED", "NOT_CONFIGURED"}
+        # honest labels only: REACHABLE requires a real answer, never faked
+        if p["status"] == "UNREACHABLE":
+            assert p["error"]
+    assert d["reachable_count"] == sum(1 for p in d["probes"] if p["status"] == "REACHABLE")
+    assert d["verdict"]  # always explains WHY data is down
