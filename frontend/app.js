@@ -58,7 +58,18 @@ function modal(title, bodyHtml, okLabel = 'Confirm') {
     $('#modal-body').innerHTML = bodyHtml;
     $('#modal-ok').textContent = okLabel;
     $('#modal-backdrop').hidden = false;
-    const close = val => { $('#modal-backdrop').hidden = true; resolve(val); };
+    const inp0 = $('#modal-body input, #modal-body textarea');
+    if (inp0) { inp0.focus(); }
+    let done = false;
+    const close = val => {
+      if (done) return;
+      done = true;
+      $('#modal-backdrop').hidden = true;
+      document.removeEventListener('keydown', onKey);
+      resolve(val);
+    };
+    const onKey = e => { if (e.key === 'Escape') close(null); };
+    document.addEventListener('keydown', onKey);
     $('#modal-cancel').onclick = () => close(null);
     $('#modal-ok').onclick = () => {
       const inp = $('#modal-body input, #modal-body textarea');
@@ -647,8 +658,9 @@ async function renderSystem() {
     const vid = b.dataset.v;
     const r = await modal(`Enable venue ${vid}`, `<p>Typed confirmation required. Enabling makes <b>${vid}</b> eligible for market routing (futures scanning, per-market routing). Live orders still require the stage gate, credentials and the Risk Engine.</p>
       <input data-k="confirm" placeholder="TYPE: ENABLE ${vid.toUpperCase()}">`, 'ENABLE');
-    if (!r || !r.inputs.confirm) return;
-    try { const res = await post(`/venues/${vid}/enable`, { confirm: r.inputs.confirm }); toast(res.ok ? `${vid} enabled for routing` : `Refused`, res.ok ? 'ok' : 'err'); renderSystem(); }
+    if (!r) return;  // cancelled
+    if (!r.inputs.confirm || !r.inputs.confirm.trim()) { toast(`Type "ENABLE ${vid.toUpperCase()}" to confirm`, 'err'); return; }
+    try { const res = await post(`/venues/${vid}/enable`, { confirm: r.inputs.confirm.trim() }); toast(res.ok ? `${vid} enabled for routing` : `Refused`, res.ok ? 'ok' : 'err'); renderSystem(); }
     catch (e) { toast(e.message, 'err'); }
   });
   $$('.disable-v').forEach(b => b.onclick = async () => {

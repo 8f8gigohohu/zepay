@@ -52,6 +52,15 @@ real ZEPAY API specification is provided — nothing is invented.
   enable/disable with typed confirmation, per-market Route column, futures
   settings in the configuration editor.
 
+### Fixed
+
+* Modal dialog bug: `#modal-backdrop` had `display:flex` which overrode the
+  HTML `hidden` attribute, rendering an empty, non-functional Confirm/Cancel
+  dialog over the whole UI at all times. `#modal-backdrop[hidden]{display:none}`
+  restores it; modals also now autofocus their input, close on Escape, and
+  guard against double-resolve. Empty typed confirmations toast an error
+  instead of failing silently.
+
 ### Honesty guarantees (unchanged, re-verified)
 
 No fake market data, balances, trades, or verification states. Futures venues
