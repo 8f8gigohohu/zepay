@@ -211,13 +211,32 @@ async function renderMarkets() {
         wrap((m.reasons || [m.why]).filter(Boolean).join(' · ').slice(0, 140))];
     }));
   $$('.mkt-link').forEach(a => a.onclick = e => { e.preventDefault(); openMarket(a.textContent); });
-  const u = await get('/universe?limit=60');
-  $('#universe-count').textContent = `· source: ${u.source.source} · ${u.source.instruments} instruments discovered`;
+  const u = await get('/universe?limit=200');
+  $('#universe-count').textContent = `· source: ${u.source.source} · ${u.source.instruments} instruments discovered · venues: ${Object.keys(u.source.venues || {}).join(', ') || '—'}`;
   const us = ($('#universe-search').value || '').toUpperCase();
   const assets = (u.assets || []).filter(a => !us || String(a.symbol).includes(us)).slice(0, 40);
-  $('#universe-table').innerHTML = table(['Symbol', 'Venue', 'Status', '24h vol (USD)', 'Base/Quote'],
-    assets.map(a => [a.symbol, a.venue, badge(a.status || 'TRADING', 'ok'), fmt(a.volume24h_usd, 0),
-      `${a.base_asset || ''}/${a.quote_asset || ''}`]));
+  const [spotSet, futSet] = await Promise.all([
+    get('/universe?venue=binance_spot&limit=300').then(r => new Set((r.assets || []).map(a => a.symbol))).catch(() => new Set()),
+    get('/universe?venue=binance_futures&limit=300').then(r => new Set((r.assets || []).map(a => a.symbol))).catch(() => new Set()),
+  ]);
+  $('#universe-table').innerHTML = table(['Symbol', 'Venue', 'Trading', 'Status', '24h vol (USD)', 'Route'],
+    assets.map(a => {
+      const isFut = a.venue === 'binance_futures';
+      const other = isFut ? 'binance_spot' : 'binance_futures';
+      const canSwitch = isFut ? spotSet.has(a.symbol) : futSet.has(a.symbol);
+      return [a.symbol,
+        badge(a.venue, isFut ? 'warn' : 'ok'),
+        isFut ? badge(`PERP ${a.max_leverage ? '≤' + a.max_leverage + 'x' : ''}`, 'warn') : 'SPOT',
+        badge(a.status || 'TRADING', 'ok'), fmt(a.volume24h_usd, 0),
+        canSwitch ? html(`<button class="btn small route-m" data-m="${esc(a.symbol)}" data-v="${other}">→ ${other === 'binance_futures' ? 'FUTURES' : 'SPOT'}</button>`) : '<span class="muted">—</span>'];
+    }));
+  $$('.route-m').forEach(b => b.onclick = async () => {
+    try {
+      const r = await post(`/markets/${encodeURIComponent(b.dataset.m)}/venue`, { venue: b.dataset.v });
+      toast(`${b.dataset.m} now trades on ${r.venue} (${r.trading_mode})`, 'ok');
+      renderMarkets();
+    } catch (e) { toast(e.message, 'err'); }
+  });
 }
 async function openMarket(market) {
   $('#market-detail').hidden = false;
@@ -536,7 +555,8 @@ async function renderSystem() {
   const editable = ['universe', 'risk_mode', 'max_positions', 'max_position_pct', 'max_total_exposure_pct',
     'risk_per_trade_pct', 'min_edge_pct', 'cycle_interval', 'candle_interval', 'candle_limit',
     'strict_ai_mode', 'ensemble_mode', 'derivs_enabled', 'ws_streaming', 'paper_starting_balance',
-    'paper_participation_max', 'fee_bps', 'slippage_bps', 'backup_keep', 'api_token'];
+    'paper_participation_max', 'fee_bps', 'slippage_bps', 'backup_keep', 'api_token',
+    'default_trading_venue', 'futures_leverage', 'futures_margin_mode', 'max_futures_leverage', 'futures_universe_scan'];
   $('#sys-config').innerHTML = `<div class="kv">${editable.filter(k => k in cfg).map(k => {
     const v = cfg[k];
     return `<div class="k">${esc(k)}</div><div class="v">${Array.isArray(v)
@@ -569,6 +589,8 @@ async function renderSystem() {
       <div class="actions" style="margin-top:6px">
         <button class="btn small test-v" data-v="${vid}">Test connection</button>
         ${vid.includes('binance') || vid === 'zepay' ? `<button class="btn small creds-v" data-v="${vid}">Set credentials…</button>` : ''}
+        ${v.enabled === false ? `<button class="btn small enable-v" data-v="${vid}">Enable venue…</button>`
+          : `<button class="btn small disable-v" data-v="${vid}">Disable venue</button>`}
       </div>
     </div>`).join('');
   $$('.test-v').forEach(b => b.onclick = async () => {
@@ -580,6 +602,59 @@ async function renderSystem() {
       <input data-k="api_key" placeholder="API key"><input data-k="api_secret" type="password" placeholder="API secret" style="margin-top:8px">`, 'SAVE');
     if (!r || !r.inputs.api_key) return;
     try { const res = await post('/venues/credentials', { venue: b.dataset.v, api_key: r.inputs.api_key, api_secret: r.inputs.api_secret }); toast(res.ok ? 'Credentials saved (encrypted)' : 'Failed', res.ok ? 'ok' : 'err'); refreshStatus(); renderSystem(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+
+  const lic = await get('/license/status');
+  const licPanel = $('#sys-license');
+  if (licPanel) {
+    licPanel.innerHTML = `
+      <div class="kv">
+        <div class="k">Status</div><div class="v">${lic.verified ? badge('VERIFIED', 'ok') : badge('NOT VERIFIED — trading gated', 'fail')}</div>
+        <div class="k">Mode</div><div class="v">${esc(lic.mode || '—')}${lic.mode === 'offline' ? ' <span class="muted">(local format check — NOT cloud verification)</span>' : ''}</div>
+        <div class="k">Cloud adapter</div><div class="v">${esc(lic.cloud_adapter)}</div>
+        <div class="k">Cloud endpoint</div><div class="v">${esc(lic.cloud_endpoint || 'not configured')}</div>
+      </div>
+      <div class="actions" style="margin-top:8px">
+        <input id="lic-key" placeholder="ZEPAY-XXXX-XXXX-…" style="flex:1">
+        <button class="btn primary" id="btn-lic-verify">Verify &amp; activate</button>
+        ${lic.verified ? '<button class="btn" id="btn-lic-clear">Deactivate</button>' : ''}
+        <button class="btn" id="btn-lic-endpoint">Cloud endpoint…</button>
+      </div>
+      <p class="muted">The key itself is never stored — only its SHA-256 hash. Cloud verification activates automatically once a ZEPAY endpoint is configured; until then verification is local-only and clearly labeled.</p>`;
+    $('#btn-lic-verify').onclick = async () => {
+      const key = $('#lic-key').value.trim();
+      if (!key) return toast('Enter your ZEPAY key first', 'err');
+      try { const r = await post('/license/verify', { key, mode: null }); toast(r.ok ? `Key accepted (${r.mode})` : `Refused: ${r.message}`, r.ok ? 'ok' : 'err'); renderSystem(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+    const clr = $('#btn-lic-clear');
+    if (clr) clr.onclick = async () => {
+      if (!await confirmDanger('Deactivate license', 'Trading will be gated until a key is verified again. Continue?')) return;
+      try { await post('/license/clear', {}); toast('License deactivated — trading gated', 'warn'); renderSystem(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+    $('#btn-lic-endpoint').onclick = async () => {
+      const r = await modal('ZEPAY cloud endpoint', `<p>Only set this when ZEPAY publishes its verification API. Empty = offline mode.</p>
+        <input data-k="endpoint" placeholder="https://…" value="${esc(lic.cloud_endpoint || '')}">`, 'SAVE');
+      if (!r) return;
+      try { await post('/license/endpoint', { endpoint: r.inputs.endpoint.trim() }); toast('Endpoint saved', 'ok'); renderSystem(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  }
+
+  $$('.enable-v').forEach(b => b.onclick = async () => {
+    const vid = b.dataset.v;
+    const r = await modal(`Enable venue ${vid}`, `<p>Typed confirmation required. Enabling makes <b>${vid}</b> eligible for market routing (futures scanning, per-market routing). Live orders still require the stage gate, credentials and the Risk Engine.</p>
+      <input data-k="confirm" placeholder="TYPE: ENABLE ${vid.toUpperCase()}">`, 'ENABLE');
+    if (!r || !r.inputs.confirm) return;
+    try { const res = await post(`/venues/${vid}/enable`, { confirm: r.inputs.confirm }); toast(res.ok ? `${vid} enabled for routing` : `Refused`, res.ok ? 'ok' : 'err'); renderSystem(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  $$('.disable-v').forEach(b => b.onclick = async () => {
+    const vid = b.dataset.v;
+    if (!await confirmDanger(`Disable ${vid}`, `Disable venue ${vid} for routing? Live execution on it will be refused.`)) return;
+    try { const res = await post(`/venues/${vid}/disable`, {}); toast(`${vid} disabled`, 'warn'); renderSystem(); }
     catch (e) { toast(e.message, 'err'); }
   });
 

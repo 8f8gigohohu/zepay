@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
-from zepay.api.deps import zapp_of
+from zepay.api.deps import guard_mutate, zapp_of
 
 router = APIRouter(prefix="/api", tags=["markets"])
 
@@ -18,7 +19,36 @@ def universe(
 ) -> dict:
     z = zapp_of(request)
     assets = z.universe.all_assets(search=search, limit=limit)
+    if venue:
+        # instruments available on a specific venue (e.g. binance_futures)
+        insts = (z.universe.by_venue or {}).get(venue) or {}
+        assets = [z.universe._asset_dict(i) for i in insts.values()][:limit]
     return {"source": z.universe.snapshot(), "assets": assets}
+
+
+class VenueBody(BaseModel):
+    venue: str  # binance_spot | binance_futures | zepay | "" (clear override)
+
+
+@router.post("/markets/{market:path}/venue", dependencies=[Depends(guard_mutate)])
+def set_market_venue(market: str, body: VenueBody, request: Request) -> dict:
+    """Route one market to a venue (futures or spot). Applies without restart."""
+    z = zapp_of(request)
+    ok = z.universe.set_market_venue(market, body.venue or None)
+    if not ok:
+        raise HTTPException(
+            400,
+            f"venue {body.venue!r} does not offer {market} (or is not scanned). "
+            "Check /api/universe?venue=… for available instruments.",
+        )
+    inst = z.universe.get(market)
+    return {
+        "ok": True,
+        "market": market,
+        "venue": inst.venue if inst else None,
+        "trading_mode": inst.trading_mode if inst else None,
+        "note": "venue routing is live — next cycle fetches and trades this market on the set venue",
+    }
 
 
 @router.get("/markets")

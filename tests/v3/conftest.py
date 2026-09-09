@@ -28,6 +28,12 @@ def app():
     settings.engine_autostart = False
     zapp = ZepayApp(settings).build()
     zapp.startup(start_ws=False, start_engine=False)
+    # simulate the operator having verified a ZEPAY key (offline mode):
+    # trading must be gated without it — dedicated license tests cover the gate
+    with zapp.config._lock:
+        zapp.config.cfg["license_key_hash"] = "test-verified-key-hash"
+        zapp.config.cfg["license_mode"] = "offline"
+        zapp.config.save_locked()
     yield zapp
     zapp.shutdown()
 

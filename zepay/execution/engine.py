@@ -539,10 +539,77 @@ class ExecutionEngine:
     # ------------------------------------------------------------------
     # LIVE (real signed orders; confirmation required; UNKNOWN → reconcile)
     # ------------------------------------------------------------------
+    def _futures_prechecks(self, adapter, market: str, sym: str) -> tuple[bool, str, int]:
+        """REAL futures pre-order checks (§9/§25). Returns (ok, error, leverage).
+
+        1. leverage requested from config → validated by the Risk Engine cap
+        2. venue position mode must be ONE-WAY (hedge mode refused: explicit)
+        3. margin type set per config (best-effort; no-op when already set)
+        """
+        requested = int(safe_float(self.config.get("futures_leverage", 1), 1))
+        ok, lev, why = self.risk.leverage_allowed(requested, futures=True)
+        if not ok:
+            # Risk Engine is the authority: adopt ITS approved cap, never the
+            # raw request, and record the capping.
+            lev = int(safe_float(lev, 1) or 1)
+            try:
+                self.audit(
+                    "risk",
+                    "futures_leverage_capped",
+                    {"requested": requested, "allowed": lev, "why": why},
+                )
+            except Exception:
+                pass
+        # instrument-level cap from REAL venue metadata when known
+        inst = self.universe.get(market)
+        max_lev = safe_float(getattr(inst, "max_leverage", 0) or 0)
+        if max_lev and lev > max_lev:
+            lev = int(max_lev)
+        try:
+            dual = adapter.position_mode()
+            if dual and dual.get("dualSidePosition"):
+                return (
+                    False,
+                    "venue is in HEDGE (dual-side) position mode — ZEPAY requires "
+                    "ONE-WAY mode. Switch the venue account to one-way and retry.",
+                    lev,
+                )
+        except Exception as e:
+            return False, f"cannot verify futures position mode: {e}", lev
+        try:
+            margin_mode = self.config.get("futures_margin_mode", "ISOLATED") or "ISOLATED"
+            adapter.set_margin_type(sym, margin_mode)
+        except Exception as e:
+            # -4046 = margin type unchanged — not an error; anything else logged
+            msg = str(e)
+            if "-4046" not in msg and "No need to change" not in msg:
+                log.warning("margin type set failed for %s: %s (continuing)", sym, msg)
+        try:
+            adapter.set_leverage(sym, lev)
+        except Exception as e:
+            return False, f"set leverage {lev}x failed on venue: {e}", lev
+        self.audit(
+            "execution",
+            "futures_prechecks_ok",
+            {
+                "market": market,
+                "leverage": lev,
+                "margin_mode": self.config.get("futures_margin_mode", "ISOLATED"),
+            },
+        )
+        return True, "", lev
+
+    def _instrument_is_futures(self, market: str, venue: str) -> bool:
+        if venue == "binance_futures":
+            return True
+        inst = self.universe.get(market)
+        return bool(inst and getattr(inst, "trading_mode", "") == "FUTURES")
+
     def _place_live(
         self, opp, size, f, strategy, key, decision_id, risk_decision_id, model_id
     ) -> dict:
-        venue = self.config.get("exchange") or "binance_spot"
+        # venue resolved PER INSTRUMENT (multi-venue routing); config is fallback
+        venue = getattr(opp, "venue", None) or self.config.get("exchange") or "binance_spot"
         adapter = self.registry.get(venue)
         if adapter is None or not adapter.has_credentials():
             return {"ok": False, "error": f"venue {venue} has no credentials configured"}
@@ -552,6 +619,17 @@ class ExecutionEngine:
         sym = self.universe.exchange_symbol(opp.symbol)
         side = "BUY" if opp.direction == "LONG" else "SELL"
         qty = size["qty"]
+        # futures instruments: REAL leverage/margin/position-mode checks first
+        if self._instrument_is_futures(opp.symbol, venue):
+            fok, ferr, _lev = self._futures_prechecks(adapter, opp.symbol, sym)
+            if not fok:
+                self.risk._event("execution", opp.symbol, "REJECTED", ferr)
+                self.audit(
+                    "execution",
+                    "futures_prechecks_failed",
+                    {"market": opp.symbol, "venue": venue, "error": ferr[:300]},
+                )
+                return {"ok": False, "error": f"futures pre-checks failed: {ferr}"}
         coid = client_order_id(opp.symbol, side)
         oid = self._new_order(
             opp.symbol,
@@ -740,13 +818,23 @@ class ExecutionEngine:
         adapter = self.registry.get(venue)
         acct = adapter.account(timeout=12)
         quote = self.config.get("quote_currency", "USDT")
-        ex_bal = {
-            b["asset"]: safe_float(b["free"]) + safe_float(b["locked"])
-            for b in acct.get("balances", [])
-        }
-        equity = ex_bal.get(quote, 0.0)
+        if venue == "binance_futures":
+            # futures account shape: wallet totals, not a balances[] list
+            equity = safe_float(
+                acct.get("totalCrossWalletBalance") or acct.get("totalWalletBalance")
+            )
+        else:
+            ex_bal = {
+                b["asset"]: safe_float(b["free"]) + safe_float(b["locked"])
+                for b in acct.get("balances", [])
+            }
+            equity = ex_bal.get(quote, 0.0)
         self.accounts.update("LIVE", equity=equity, available=equity)
-        BUS.publish(E.BALANCE_CHANGED, {"mode": "LIVE", "equity": equity}, source="execution")
+        BUS.publish(
+            E.BALANCE_CHANGED,
+            {"mode": "LIVE", "equity": equity, "venue": venue},
+            source="execution",
+        )
 
     # ------------------------------------------------------------------
     # limit orders (paper) + resting order management
@@ -766,9 +854,10 @@ class ExecutionEngine:
             return {"ok": False, "error": "qty and limit price must be > 0"}
         side = "BUY" if direction == "LONG" else "SELL"
         key = idempotency_key("LIMIT", market, direction, str(ts_ms()), pysecrets.token_hex(3))
+        venue = self.universe.venue_of(market)
         oid = self._new_order(
             market,
-            "binance_spot",
+            venue,
             side,
             direction,
             qty,
@@ -781,10 +870,8 @@ class ExecutionEngine:
             decision_id,
             limit_price=limit_price,
         )
-        self.sm.transition(oid, OrderStatus.VALIDATED.value, "limit validated", "binance_spot")
-        self.sm.transition(
-            oid, OrderStatus.ACKNOWLEDGED.value, "resting in paper book", "binance_spot"
-        )
+        self.sm.transition(oid, OrderStatus.VALIDATED.value, "limit validated", venue)
+        self.sm.transition(oid, OrderStatus.ACKNOWLEDGED.value, "resting in paper book", venue)
         self.audit(
             "trading",
             "paper_limit_placed",
@@ -944,13 +1031,23 @@ class ExecutionEngine:
             entry = safe_float(pos["entry_price"])
             fill = None
             if mode == "LIVE":
-                adapter = self.registry.get(self.config.get("exchange") or "binance_spot")
+                # venue comes from the POSITION (multi-venue routing)
+                venue = pos.get("venue") or self.config.get("exchange") or "binance_spot"
+                adapter = self.registry.get(venue)
+                if adapter is None or not adapter.has_credentials():
+                    return {"ok": False, "error": f"venue {venue} has no credentials configured"}
                 sym = self.universe.exchange_symbol(market)
                 side = "SELL" if direction == "LONG" else "BUY"
                 coid = client_order_id(market, side)
+                reduce_only = self._instrument_is_futures(market, venue)
                 try:
                     res = adapter.place_order(
-                        sym, side, qty, order_type="MARKET", client_order_id=coid
+                        sym,
+                        side,
+                        qty,
+                        order_type="MARKET",
+                        client_order_id=coid,
+                        reduce_only=reduce_only,
                     )
                     confirm = adapter.get_order(sym, order_id=str(res.get("orderId")))
                     executed = safe_float(confirm.get("executedQty"))

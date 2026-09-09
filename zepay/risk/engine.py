@@ -139,6 +139,9 @@ class RiskEngine:
         adapter = self.registry.get(venue)
         if adapter is None:
             return False, f"venue {venue} not registered"
+        flags = self.config.get("venues_enabled") or {}
+        if not flags.get(venue):
+            return False, f"venue {venue} not enabled by the operator — live execution blocked"
         st = adapter.status()
         if st in ("BLOCKED", "UNREACHABLE", "NOT_CONFIGURED"):
             return False, f"venue {venue} status {st} — live execution blocked (§43)"
@@ -383,9 +386,13 @@ class RiskEngine:
     # ------------------------------------------------------------------
     # liquidation / leverage protection (futures)
     # ------------------------------------------------------------------
-    def leverage_allowed(self, requested: float) -> tuple[bool, float, str]:
+    def leverage_allowed(self, requested: float, futures: bool = False) -> tuple[bool, float, str]:
+        """Spot uses `max_leverage` (default 1.0); futures uses
+        `max_futures_leverage` (default 3.0). Both are hard-capped at 5x."""
+        cfg_key = "max_futures_leverage" if futures else "max_leverage"
+        default = 3.0 if futures else 1.0
         cap = min(
-            safe_float(self.config.get("max_leverage", 1.0), 1.0),
+            max(safe_float(self.config.get(cfg_key, default), default), 1.0),
             float(HARD_LIMITS["max_hard_leverage"]),
         )
         if requested > cap:

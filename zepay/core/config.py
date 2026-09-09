@@ -109,9 +109,18 @@ DEFAULT_CONFIG = {
         "zepay": False,  # NOT_CONFIGURED until endpoint spec exists
         "solana": False,  # read-only market data unless wallet connected
     },
-    "exchange": "binance_spot",  # primary execution venue for live
+    "exchange": "binance_spot",  # fallback execution venue for live (per-instrument routing wins)
     "exchange_api_key_id": None,  # reference into encrypted SecretsStore
     "exchange_account_type": "SPOT",
+    # --- multi-venue routing (v3.1: per-instrument venue selection) ---
+    "default_trading_venue": "binance_spot",  # binance_spot | binance_futures | zepay
+    "market_venue_overrides": {},  # symbol → venue (set via /markets/{m}/venue)
+    "futures_universe_scan": True,  # scan fapi exchangeInfo for the catalogue (public)
+    "futures_leverage": 1,  # requested leverage; capped by risk engine + venue brackets
+    "max_futures_leverage": 3.0,  # Risk Engine futures cap (hard ceiling 5x, §21)
+    "futures_margin_mode": "ISOLATED",  # ISOLATED | CROSSED
+    # --- ZEPAY license (§6) ---
+    "require_license_key": True,  # trading gated until a key is verified
     # --- risk (§21) — Risk Engine is ALWAYS more powerful than AI ---
     "risk_mode": "Conservative",
     "max_positions": 5,
@@ -198,6 +207,7 @@ RISK_PRESETS = {
 
 PRIVILEGED_KEYS = (
     "license_key_hash",
+    "license_mode",
     "live_enabled",
     "operational_stage",
     "trading_mode",

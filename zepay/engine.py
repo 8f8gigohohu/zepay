@@ -23,6 +23,7 @@ from zepay.core.domain import Decision
 from zepay.core.events import BUS, E
 from zepay.core.ids import new_id
 from zepay.core.util import clamp, safe_float, utcnow_iso
+from zepay.security.license import license_ok
 from zepay.strategies.base import StrategyContext
 
 log = logging.getLogger("zepay.engine")
@@ -177,6 +178,13 @@ class TradingEngine:
         }
         BUS.publish(E.CYCLE_STARTED, {"cycle_id": cycle_id, "mode": mode}, source="engine")
         try:
+            # §6: trading is gated until a ZEPAY key is verified (honest gate)
+            lic_ok, lic_why = license_ok(self.config)
+            if not lic_ok:
+                report["ok"] = False
+                report["error"] = lic_why
+                report["license_gated"] = True
+                return report
             markets = self.active_markets()
             report["markets_count"] = len(markets)
             report["refresh"] = self.refresh_data(markets)
@@ -186,8 +194,8 @@ class TradingEngine:
             )
             positions = self.portfolio.positions(mode)
             exposure = self.portfolio.exposure(positions, equity)
-            # ---- features (real data only) ----
-            feats = self.features.build_many(markets)
+            # ---- features (real data only; venue resolved per instrument) ----
+            feats = {m: self.features.build(m, venue=self.universe.venue_of(m)) for m in markets}
             feats = self.cross_asset.enrich(feats)
             mat = self.cross_asset.matrix(markets)
             champ = None
